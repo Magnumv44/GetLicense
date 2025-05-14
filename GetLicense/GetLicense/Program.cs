@@ -19,19 +19,19 @@ class Program
             string macAddress = GetMacAddress();
 
             string content = $"Інформація про систему\n" +
-                           $"-------------------\n" +
-                           $"Ім'я ПК: {pcName}\n" +
-                           $"ОС: {osVersion}\n" +
-                           $"Ключ Windows: {windowsKey}\n" +
-                           $"\nІнформація про Office\n" +
-                           $"-------------------\n" +
-                           $"Версія: {officeInfo.Version}\n" +
-                           $"Тип ліцензії: {officeInfo.LicenseType}\n" +
-                           $"Ключ продукту: {officeInfo.ProductKey}\n" +
-                           $"\nМережа\n" +
-                           $"-------------------\n" +
-                           $"MAC-адреса: {macAddress}\n" +
-                           $"\nДата збору: {DateTime.Now}";
+                             $"-------------------\n" +
+                             $"Ім'я ПК: {pcName}\n" +
+                             $"ОС: {osVersion}\n" +
+                             $"Ключ Windows: {windowsKey}\n" +
+                             $"\nІнформація про Office\n" +
+                             $"-------------------\n" +
+                             $"Версія: {officeInfo.Version}\n" +
+                             $"Тип ліцензії: {officeInfo.LicenseType}\n" +
+                             $"Ключ продукту: {officeInfo.ProductKey}\n" +
+                             $"\nМережа\n" +
+                             $"-------------------\n" +
+                             $"MAC-адреса: {macAddress}\n" +
+                             $"\nДата збору: {DateTime.Now}";
 
             string fileName = $"Office_System_Info_{pcName}.txt";
             File.WriteAllText(fileName, content, Encoding.UTF8);
@@ -43,6 +43,10 @@ class Program
         }
     }
 
+    /// <summary>
+    /// Статичний метод отримання версії операційної системи
+    /// </summary>
+    /// <returns></returns>
     static string GetOSVersion()
     {
         try
@@ -104,11 +108,17 @@ class Program
                 }
             }
         }
-        catch { }
+        catch
+        {
+        }
 
         return "Не вдалося визначити версію ОС";
     }
 
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <returns></returns>
     static string GetWindowsProductKey()
     {
         try
@@ -127,7 +137,8 @@ class Program
             }
 
             // Спосіб 2: Для старих версій Windows
-            using (var searcher = new ManagementObjectSearcher("SELECT OA3xOriginalProductKey FROM SoftwareLicensingService"))
+            using (var searcher =
+                   new ManagementObjectSearcher("SELECT OA3xOriginalProductKey FROM SoftwareLicensingService"))
             {
                 foreach (ManagementObject obj in searcher.Get())
                 {
@@ -136,82 +147,245 @@ class Program
                 }
             }
         }
-        catch { }
+        catch
+        {
+        }
+
         return "Не вдалося отримати ключ";
     }
 
+    /// <summary>
+    /// Головний метод для отримання інформації про Microsoft Office
+    /// Виконує послідовну перевірку: швидка перевірка на наявності → детальний аналіз на предмет звичної інсталяції ПЗ → перевірка на Click-to-Run → фінальний висновок
+    /// Повертає кортеж з версією, типом ліцензії та ключем продукту
+    /// </summary>
+    /// <returns></returns>
     static (string Version, string LicenseType, string ProductKey) GetOfficeInfo()
     {
-        try
+        // 1. Спершу перевіряємо очевидні ознаки відсутності Office
+        if (!IsOfficeLikelyInstalled())
         {
-            // Спершу перевіряємо Click-to-Run (Office 365)
-            var c2rInfo = GetClickToRunInfo();
-            if (!string.IsNullOrEmpty(c2rInfo.Version))
-                return c2rInfo;
+            return ("Не встановлено", "", "");
+        }
 
-            // Потім перевіряємо традиційні інсталяції
-            return GetTraditionalOfficeInfo();
-        }
-        catch
+        // 2. Детальна перевірка на предмет звичайної інсталяції MS Office з інсталяціонного дистрибутиву
+        var traditionalInfo = GetTraditionalOfficeInfoDetailed();
+        if (traditionalInfo.Version != "Не встановлено")
         {
-            return ("Не вдалося визначити", "", "");
+            return traditionalInfo;
         }
+
+        // 3. Перевірка Click-to-Run
+        var c2rInfo = GetClickToRunInfoStrict();
+        if (c2rInfo.Version != "Не встановлено")
+        {
+            return c2rInfo;
+        }
+
+        // 4. Якщо жоден метод не знайшов Office
+        return ("Не встановлено", "", "");
     }
 
-    static (string Version, string LicenseType, string ProductKey) GetClickToRunInfo()
+    /// <summary>
+    /// Швидка перевірка можливої наявності Office на системі
+    /// Перевіряє ключові розділи реєстру та стандартні шляхи інсталяції
+    /// Оптимізовано для швидкого виконання з мінімальним навантаженням
+    /// </summary>
+    /// <returns>Булеве значення результату перевірки (true or false)</returns>
+    static bool IsOfficeLikelyInstalled()
     {
         try
         {
-            using (RegistryKey c2rKey = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Office\ClickToRun\Configuration"))
+            // Швидка перевірка по ключових файлах і ключах реєстру
+            string[] checkPaths =
             {
-                if (c2rKey != null)
+                @"SOFTWARE\Microsoft\Office",
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                @"C:\Program Files\Microsoft Office",
+                @"C:\Program Files (x86)\Microsoft Office"
+            };
+
+            foreach (var path in checkPaths)
+            {
+                if (path.Contains("\\"))
                 {
-                    string productLine = c2rKey.GetValue("ProductLine")?.ToString() ?? "Office 365";
-                    string version = c2rKey.GetValue("VersionToReport")?.ToString() ?? "Не вдалося визначити";
-                    return ($"{productLine} (Click-to-Run)", "Цифрова ліцензія", "Ключ зберігається в обліковому записі Microsoft");
+                    using (var key = Registry.LocalMachine.OpenSubKey(path))
+                    {
+                        if (key != null && key.SubKeyCount > 0) return true;
+                    }
+                }
+                else if (Directory.Exists(path))
+                {
+                    return true;
                 }
             }
         }
-        catch { }
-        return ("", "", "");
+        catch
+        {
+        }
+
+        return false;
     }
 
-    static (string Version, string LicenseType, string ProductKey) GetTraditionalOfficeInfo()
+    /// <summary>
+    /// Детальний аналіз традиційних (MSI) інсталяцій Microsoft Office
+    /// Перевіряє всі версії Office від 2000 до 2021 у реєстрі
+    /// Включає перевірку ProductName та ProductId для ідентифікації справжніх інсталяцій Office
+    /// </summary>
+    /// <returns>Строкове значення (string) з описом результату перевірки</returns>
+    static (string Version, string LicenseType, string ProductKey) GetTraditionalOfficeInfoDetailed()
     {
         try
         {
-            string[] officeVersions = { "16.0", "15.0", "14.0", "12.0" };
+            string[] officeVersions = { "16.0", "15.0", "14.0", "12.0", "11.0", "10.0", "9.0" };
+
             foreach (string version in officeVersions)
             {
-                using (RegistryKey baseKey = Registry.LocalMachine.OpenSubKey($@"SOFTWARE\Microsoft\Office\{version}\Registration"))
+                using (var baseKey = Registry.LocalMachine.OpenSubKey(
+                           $@"SOFTWARE\Microsoft\Office\{version}\Registration"))
                 {
-                    if (baseKey != null)
+                    if (baseKey == null) continue;
+
+                    foreach (string subKeyName in baseKey.GetSubKeyNames().Where(x => x.StartsWith("{")))
                     {
-                        foreach (string subKeyName in baseKey.GetSubKeyNames())
+                        using (var subKey = baseKey.OpenSubKey(subKeyName))
                         {
-                            using (RegistryKey subKey = baseKey.OpenSubKey(subKeyName))
-                            {
-                                string productName = subKey?.GetValue("ProductName")?.ToString() ?? "Microsoft Office";
-                                string licenseType = subKey?.GetValue("LicenseType")?.ToString() ?? "Невідомо";
-                                byte[] digitalProductId = subKey?.GetValue("DigitalProductId") as byte[];
+                            if (subKey == null) continue;
 
-                                string productKey = "Не вдалося отримати";
-                                if (digitalProductId != null && digitalProductId.Length > 0)
-                                {
-                                    productKey = DecodeOfficeKey(digitalProductId);
-                                }
+                            string productName = subKey.GetValue("ProductName")?.ToString() ?? "";
+                            string productId = subKey.GetValue("ProductId")?.ToString() ?? "";
 
-                                return ($"{productName} (версія {version})", licenseType, productKey);
-                            }
+                            // Тверда перевірка, що це дійсно Office
+                            if (!IsValidOfficeProduct(productName, productId))
+                                continue;
+
+                            string licenseType = subKey.GetValue("LicenseType")?.ToString() ?? "Невідомо";
+                            byte[] digitalProductId = subKey.GetValue("DigitalProductId") as byte[];
+                            string productKey = digitalProductId != null
+                                ? DecodeOfficeKey(digitalProductId)
+                                : "Не вдалося отримати";
+
+                            return (GetOfficeVersionName(version, productName), licenseType, productKey);
                         }
                     }
                 }
             }
         }
-        catch { }
-        return ("Microsoft Office не знайдено", "", "");
+        catch
+        {
+        }
+
+        return ("Не встановлено", "", "");
     }
 
+    /// <summary>
+    /// Перевірка чи є продукт справжнім Office
+    /// Використовує списки допустимих продуктів і виключень
+    /// Додатково перевіряє ProductId для підтвердження
+    /// Запобігає помилковій ідентифікації суміжних продуктів (наприклад, Skype, Proofing Tools)
+    /// </summary>
+    /// <param name="productName">string</param>
+    /// <param name="productId">string</param>
+    /// <returns>Повертає строку типу string з назвою різновиду MS Office (Standart, Professional, Home і тд)</returns>
+    static bool IsValidOfficeProduct(string productName, string productId)
+    {
+        if (string.IsNullOrWhiteSpace(productName)) return false;
+
+        // Список допустимих продуктів
+        string[] validProducts =
+        {
+            "Office", "Word", "Excel", "PowerPoint", "Outlook",
+            "Access", "Publisher", "OneNote", "Visio", "Project"
+        };
+
+        // Список виключень (не Office)
+        string[] excludeProducts =
+        {
+            "Proofing", "Proof", "Compatibility", "Converter",
+            "Component", "Language", "Language Pack", "Help"
+        };
+
+        bool isOffice = validProducts.Any(p => productName.Contains(p)) &&
+                        !excludeProducts.Any(p => productName.Contains(p));
+
+        // Додаткова перевірка по ProductID
+        if (!string.IsNullOrWhiteSpace(productId))
+        {
+            isOffice = isOffice && (productId.StartsWith("Office") ||
+                                    productId.Contains("Standard") ||
+                                    productId.Contains("Professional") ||
+                                    productId.Contains("Home"));
+        }
+
+        return isOffice;
+    }
+
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <returns></returns>
+    static (string Version, string LicenseType, string ProductKey) GetClickToRunInfoStrict()
+    {
+        try
+        {
+            using (var c2rKey = Registry.LocalMachine.OpenSubKey(
+                       @"SOFTWARE\Microsoft\Office\ClickToRun\Configuration"))
+            {
+                if (c2rKey == null) return ("Не встановлено", "", "");
+
+                string productIds = c2rKey.GetValue("ProductReleaseIds")?.ToString() ?? "";
+                string version = c2rKey.GetValue("VersionToReport")?.ToString() ?? "";
+
+                if (!string.IsNullOrWhiteSpace(productIds) && productIds.Contains("O365"))
+                {
+                    return ("Microsoft 365 Apps for enterprise (Click-to-Run)",
+                        "Цифрова ліцензія",
+                        "Ключ зберігається в обліковому записі Microsoft");
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return ("Не встановлено", "", "");
+    }
+
+    /// <summary>
+    /// Метод формування версійної назви MS Office на основі позначення. Наприклад 16.0 = 2021/2019/365
+    /// </summary>
+    /// <param name="version">string</param>
+    /// <param name="productName">string</param>
+    /// <returns>Повертає строкове значення в вигляді назви версії для чіткого розуміння</returns>
+    static string GetOfficeVersionName(string version, string productName)
+    {
+        var versionMap = new Dictionary<string, string>
+        {
+            ["16.0"] = "2021/2019/365",
+            ["15.0"] = "2013",
+            ["14.0"] = "2010",
+            ["12.0"] = "2007",
+            ["11.0"] = "2003",
+            ["10.0"] = "2002",
+            ["9.0"] = "2000"
+        };
+
+        string versionName = versionMap.TryGetValue(version, out var name) ? name : version;
+
+        // Додаємо інформацію про LTSC
+        if (productName.Contains("LTSC"))
+        {
+            versionName += " LTSC";
+        }
+
+        return $"{productName} ({versionName})";
+    }
+
+    /// <summary>
+    /// Метод декодування ключа операційної системі, та його форматування в потрібному форматі. 
+    /// </summary>
+    /// <param name="digitalProductId">Масив байтів (byte array)</param>
+    /// <returns>Віддає строку (string type) з ключем в вигляді "XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"</returns>
     static string DecodeWindowsKey(byte[] digitalProductId)
     {
         const string keyChars = "BCDFGHJKMPQRTVWXY2346789";
@@ -228,6 +402,7 @@ class Program
                     digitalProductId[j] = (byte)(current / 24);
                     current %= 24;
                 }
+
                 productKey[i] = keyChars[current];
             }
 
@@ -243,6 +418,11 @@ class Program
         }
     }
 
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <param name="digitalProductId"></param>
+    /// <returns></returns>
     static string DecodeOfficeKey(byte[] digitalProductId)
     {
         const string keyChars = "BCDFGHJKMPQRTVWXY2346789";
@@ -259,6 +439,7 @@ class Program
                     digitalProductId[j] = (byte)(current / 24);
                     current %= 24;
                 }
+
                 productKey[i] = keyChars[current];
             }
 
@@ -270,6 +451,10 @@ class Program
         }
     }
 
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <returns></returns>
     static string GetMacAddress()
     {
         try
@@ -294,12 +479,16 @@ class Program
                                     formattedMac.Append("-");
                             }
                         }
+
                         return formattedMac.ToString();
                     }
                 }
             }
         }
-        catch { }
+        catch
+        {
+        }
+
         return "Не вдалося отримати";
     }
 }
